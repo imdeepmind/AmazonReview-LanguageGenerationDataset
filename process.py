@@ -8,18 +8,45 @@ class Process:
     SEQ_LENGTH = 40
     sql_transaction = []
     dataset = []
-    database = None
-    connection = None
+    cursor_train = None
+    cursor_validation = None
+    cursor_test = None
     
-    def __init__(self, path, database, SEQ_LENGTH=40):
+    # I know in advance that there are 199819620 rows 
+    NUM_ROWS = 199819620
+    train_size = None
+    val_size = None
+    test_size = None
+    counter = 0
+    
+    def __init__(self, path, database_dir, split=(0.8, 0.1, 0.1), SEQ_LENGTH=40):
         self.SEQ_LENGTH = SEQ_LENGTH
         
-        # Connecting to the database
-        connection = sqlite3.connect(database)
-        c = connection.cursor()
+        # Connecting to the train database
+        connection_train = sqlite3.connect(database_dir + "/sequence_train.db")
+        c = connection_train.cursor()
         
-        self.database = c
-        self.connection = connection
+        self.cursor_train = c
+        
+        # Connecting to the validation database
+        connection_validation = sqlite3.connect(database_dir + "/sequence_val.db")
+        c = connection_validation.cursor()
+        
+        self.cursor_validation = c
+        
+        # Connecting to the test database
+        connection_test = sqlite3.connect(database_dir + "/sequence_test.db")
+        c = connection_test.cursor()
+        
+        self.cursor_test = c
+        
+        train, val, test = split
+        if (train + val + test) != 1.0:
+            raise ValueError('Invalid split data')
+        
+        self.train_size = int(self.NUM_ROWS * train)
+        self.val_size = int(self.NUM_ROWS * val)
+        self.test_size = int(self.NUM_ROWS * test)
         
         print('--Reading the dataset--')
         # Reading the dataset
@@ -45,27 +72,51 @@ class Process:
         self.dataset = data
     
     def create_table(self):
-        self.database.execute("CREATE TABLE IF NOT EXISTS reviews(review TEXT, next TEXT);")
+        self.cursor_train.execute("CREATE TABLE IF NOT EXISTS reviews(review TEXT, next TEXT);")
+        self.cursor_validation.execute("CREATE TABLE IF NOT EXISTS reviews(review TEXT, next TEXT);")
+        self.cursor_test.execute("CREATE TABLE IF NOT EXISTS reviews(review TEXT, next TEXT);")
         
-    def transaction_bldr(self, sql):
+    def transaction_bldr(self, sql, db):
         self.sql_transaction.append(sql)
         
         if len(self.sql_transaction) > 1000:
             random.shuffle(self.sql_transaction)
-            self.database.execute('BEGIN TRANSACTION')
-            for s in self.sql_transaction:
-                try:
-                    self.database.execute(s)
-                except Exception as ex:
-                    print('Transaction fail ', ex)
-                    print('SQL ', s)
-            self.database.execute('commit')
-            self.sql_transaction = []
             
-    def insertData(self, sequence, nxt):
+            if db == 'train':
+                self.cursor_train.execute('BEGIN TRANSACTION')
+                for s in self.sql_transaction:
+                    try:
+                        self.cursor_train.execute(s)
+                    except Exception as ex:
+                        print('Transaction fail ', ex)
+                        print('SQL ', s)
+                self.cursor_train.execute('commit')
+                self.sql_transaction = []
+            elif db == 'val':
+                self.cursor_validation.execute('BEGIN TRANSACTION')
+                for s in self.sql_transaction:
+                    try:
+                        self.cursor_validation.execute(s)
+                    except Exception as ex:
+                        print('Transaction fail ', ex)
+                        print('SQL ', s)
+                self.cursor_validation.execute('commit')
+                self.sql_transaction = []
+            elif db == 'test':
+                self.cursor_test.execute('BEGIN TRANSACTION')
+                for s in self.sql_transaction:
+                    try:
+                        self.cursor_test.execute(s)
+                    except Exception as ex:
+                        print('Transaction fail ', ex)
+                        print('SQL ', s)
+                self.cursor_test.execute('commit')
+                self.sql_transaction = []
+            
+    def insertData(self, sequence, nxt, db):
         try:
             sql = "INSERT INTO reviews(review, next) VALUES('{}', '{}');".format(sequence, nxt)
-            self.transaction_bldr(sql)
+            self.transaction_bldr(sql, db)
         except Exception as e:
             print('Something went wrong when inserting the data into database, ',str(e))
         
@@ -128,9 +179,15 @@ class Process:
                 seq = review[k:self.SEQ_LENGTH + k]
                 nxt = review[self.SEQ_LENGTH + k]
                 
-                self.insertData(seq, nxt)
+                if self.counter < self.train_size:
+                    self.insertData(seq, nxt, 'train')
+                elif self.counter < self.train_size + self.val_size:
+                    self.insertData(seq, nxt, 'val')
+                elif self.counter < self.train_size + self.val_size + self.test_size:
+                    self.insertData(seq, nxt, 'test')
 
-
-process = Process('dataset/02.tsv', 'dataset/sequence.db', 40)
+                self.counter += 1
+                
+process = Process('dataset/02.tsv', 'dataset', (.8, .1, .1), 40)
 process.create_table()
 process.process()
